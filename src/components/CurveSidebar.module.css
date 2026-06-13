@@ -1,0 +1,231 @@
+.sidebar {
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.sidebarToolbar {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.actionButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  font-weight: 650;
+}
+
+.primary {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+
+.primary:hover:not(:disabled) {
+  border-color: var(--blue-dark);
+  background: var(--blue-dark);
+}
+
+.danger {
+  color: var(--red);
+}
+
+.menuWrap,
+.importWrap {
+  position: relative;
+}
+
+.menu,
+.popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 6;
+  min-width: 190px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+
+.menu button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.popover {
+  width: 280px;
+  display: grid;
+  gap: 12px;
+  color: var(--ink);
+}
+
+.popoverTitle {
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.popoverActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.curveList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  color: var(--muted);
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+}
+
+.curveItem {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.selected {
+  border-color: rgba(37, 99, 235, 0.62);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.11);
+}
+
+.curveHeader {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+}
+
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  padding: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.curveName {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  min-height: 28px;
+}
+
+.nameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 720;
+}
+
+.colorDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  flex: 0 0 12px;
+}
+
+.renameInput {
+  width: 100%;
+  font-weight: 720;
+}
+
+.curveKind {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  text-transform: capitalize;
+}
+
+.points {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px 10px;
+}
+
+.pointRow {
+  display: grid;
+  grid-template-columns: 54px 1fr 1fr 30px;
+  gap: 6px;
+  align-items: center;
+}
+
+.pointRole {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pointRow input {
+  width: 100%;
+  min-width: 0;
+}
+
+.removePoint {
+  width: 30px;
+  min-height: 30px;
+  color: var(--red);
+  font-size: 18px;
+}
+
+.addPoint {
+  width: 100%;
+  display: grid;
+  place-items: center;
+  background: #f3fbf7;
+  border-color: #8ac7aa;
+  color: var(--green);
+  border-style: dashed;
+  font-weight: 760;
+}
+
+@media (max-width: 920px) {
+  .sidebar {
+    height: auto;
+    min-height: 360px;
+  }
+}
