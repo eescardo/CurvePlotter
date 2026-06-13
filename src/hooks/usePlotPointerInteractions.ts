@@ -5,6 +5,11 @@ import { magnetizeGuide } from "../lib/drawing";
 import { clamp } from "../lib/format";
 import type { Curve, Point, PointHistorySnapshot } from "../lib/types";
 
+type SvgPoint = {
+  x: number;
+  y: number;
+};
+
 type UsePlotPointerInteractionsOptions = {
   curvesRef: RefObject<Curve[]>;
   svgRef: RefObject<SVGSVGElement | null>;
@@ -23,6 +28,21 @@ type UsePlotPointerInteractionsOptions = {
   snapshotCurrentPoints: () => PointHistorySnapshot;
   recordPointSnapshot: (snapshot: PointHistorySnapshot) => boolean;
 };
+
+function clientToSvgPoint(svg: SVGSVGElement, clientX: number, clientY: number): SvgPoint | null {
+  const screenMatrix = svg.getScreenCTM();
+  if (!screenMatrix) return null;
+
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+
+  try {
+    return point.matrixTransform(screenMatrix.inverse());
+  } catch {
+    return null;
+  }
+}
 
 export function usePlotPointerInteractions({
   curvesRef,
@@ -51,34 +71,52 @@ export function usePlotPointerInteractions({
     startCenterY: number;
   } | null>(null);
 
-  const svgPointFromEvent = useCallback(
-    (event: PointerEvent<SVGSVGElement>) => {
+  const svgPointFromClient = useCallback(
+    (clientX: number, clientY: number) => {
       const svg = svgRef.current;
-      if (!svg) return { x: 0, y: 0 };
+      if (!svg) return null;
 
-      const rect = svg.getBoundingClientRect();
+      return clientToSvgPoint(svg, clientX, clientY);
+    },
+    [svgRef]
+  );
+
+  const plotPointFromClient = useCallback(
+    (clientX: number, clientY: number) => {
+      const svgPoint = svgPointFromClient(clientX, clientY);
+      if (!svgPoint) return null;
+
       return {
-        x: centerX + ((event.clientX - rect.left) / rect.width) * (clampedExtent * 2) - clampedExtent,
-        y: invertYAxis
-          ? centerY + ((event.clientY - rect.top) / rect.height) * (clampedExtent * 2) - clampedExtent
-          : centerY + clampedExtent - ((event.clientY - rect.top) / rect.height) * (clampedExtent * 2)
+        x: svgPoint.x,
+        y: invertYAxis ? svgPoint.y : -svgPoint.y
       };
     },
-    [centerX, centerY, clampedExtent, invertYAxis, svgRef]
+    [invertYAxis, svgPointFromClient]
+  );
+
+  const plotDeltaFromClientMovement = useCallback(
+    (startClientX: number, startClientY: number, endClientX: number, endClientY: number) => {
+      const start = svgPointFromClient(startClientX, startClientY);
+      const end = svgPointFromClient(endClientX, endClientY);
+      if (!start || !end) return null;
+
+      const rootDeltaY = end.y - start.y;
+      return {
+        x: end.x - start.x,
+        y: invertYAxis ? rootDeltaY : -rootDeltaY
+      };
+    },
+    [invertYAxis, svgPointFromClient]
   );
 
   const handlePointerMove = useCallback(
     (event: PointerEvent<SVGSVGElement>) => {
       if (panning) {
-        const svg = svgRef.current;
-        if (!svg) return;
+        const delta = plotDeltaFromClientMovement(panning.startClientX, panning.startClientY, event.clientX, event.clientY);
+        if (!delta) return;
 
-        const rect = svg.getBoundingClientRect();
-        const deltaX = ((event.clientX - panning.startClientX) / rect.width) * (clampedExtent * 2);
-        const deltaY = ((event.clientY - panning.startClientY) / rect.height) * (clampedExtent * 2);
-
-        setCenterX(panning.startCenterX - deltaX);
-        setCenterY(panning.startCenterY + (invertYAxis ? -deltaY : deltaY));
+        setCenterX(panning.startCenterX - delta.x);
+        setCenterY(panning.startCenterY - delta.y);
         return;
       }
 
@@ -88,11 +126,13 @@ export function usePlotPointerInteractions({
       const pointIndex = curve?.points.findIndex((point) => point.id === dragging.pointId) ?? -1;
       if (!curve || pointIndex < 0) return;
 
-      const rawPoint = svgPointFromEvent(event);
+      const rawPoint = plotPointFromClient(event.clientX, event.clientY);
+      if (!rawPoint) return;
+
       const nextPoint = magnetizeGuide(curve, pointIndex, { ...curve.points[pointIndex], ...rawPoint }, clampedExtent);
       updatePoint(curve.id, dragging.pointId, { x: nextPoint.x, y: nextPoint.y }, false);
     },
-    [clampedExtent, curvesRef, dragging, invertYAxis, panning, setCenterX, setCenterY, svgPointFromEvent, svgRef, updatePoint]
+    [clampedExtent, curvesRef, dragging, panning, plotDeltaFromClientMovement, plotPointFromClient, setCenterX, setCenterY, updatePoint]
   );
 
   const startPanning = useCallback(
@@ -156,20 +196,24 @@ export function usePlotPointerInteractions({
       const svg = svgRef.current;
       if (!svg) return;
 
-      const rect = svg.getBoundingClientRect();
       const likelyTrackpadPan = !event.ctrlKey && event.deltaMode === 0 && (Math.abs(event.deltaX) > 0 || Math.abs(event.deltaY) < 50);
 
       if (likelyTrackpadPan) {
-        const deltaX = (event.deltaX / rect.width) * (clampedExtent * 2);
-        const deltaY = (event.deltaY / rect.height) * (clampedExtent * 2);
+        const delta = plotDeltaFromClientMovement(event.clientX, event.clientY, event.clientX + event.deltaX, event.clientY + event.deltaY);
+        if (!delta) return;
 
-        setCenterX((current) => current + deltaX);
-        setCenterY((current) => current + (invertYAxis ? deltaY : -deltaY));
+        setCenterX((current) => current + delta.x);
+        setCenterY((current) => current + delta.y);
         return;
       }
 
-      const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-      const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+      const svgPoint = clientToSvgPoint(svg, event.clientX, event.clientY);
+      if (!svgPoint) return;
+
+      const viewBoxXMin = centerX - clampedExtent;
+      const viewBoxYMin = invertYAxis ? centerY - clampedExtent : -(centerY + clampedExtent);
+      const normalizedX = clamp((svgPoint.x - viewBoxXMin) / (clampedExtent * 2), 0, 1);
+      const normalizedY = clamp((svgPoint.y - viewBoxYMin) / (clampedExtent * 2), 0, 1);
       const worldX = centerX + (normalizedX * 2 - 1) * clampedExtent;
       const worldY = invertYAxis
         ? centerY + (normalizedY * 2 - 1) * clampedExtent
@@ -181,7 +225,19 @@ export function usePlotPointerInteractions({
       setCenterX(worldX - (normalizedX * 2 - 1) * nextExtent);
       setCenterY(invertYAxis ? worldY - (normalizedY * 2 - 1) * nextExtent : worldY - (1 - normalizedY * 2) * nextExtent);
     },
-    [centerX, centerY, clampedExtent, effectiveMaxExtent, effectiveMinExtent, invertYAxis, setCenterX, setCenterY, setExtent, svgRef]
+    [
+      centerX,
+      centerY,
+      clampedExtent,
+      effectiveMaxExtent,
+      effectiveMinExtent,
+      invertYAxis,
+      plotDeltaFromClientMovement,
+      setCenterX,
+      setCenterY,
+      setExtent,
+      svgRef
+    ]
   );
 
   useEffect(() => {
