@@ -1,22 +1,34 @@
 "use client";
 
-import { ChangeEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CurveSidebar } from "./CurveSidebar";
 import { PlotterCanvas } from "./PlotterCanvas";
 import { PlotterHeader } from "./PlotterHeader";
-import { COLORS, MAX_HISTORY_STEPS } from "../lib/constants";
+import { usePlotPointerInteractions } from "../hooks/usePlotPointerInteractions";
+import { usePointHistory } from "../hooks/usePointHistory";
+import { COLORS } from "../lib/constants";
 import { curveToCsv, parseImportedPoints } from "../lib/csv";
 import { createInitialState, makeId, makePoint } from "../lib/curveFactory";
-import { gridValues, magnetizeGuide, markerValues, nextPointForCurve } from "../lib/drawing";
+import { gridValues, markerValues, nextPointForCurve } from "../lib/drawing";
 import { clamp } from "../lib/format";
-import { applyPointSnapshot, pointSnapshotsEqual, snapshotPoints } from "../lib/history";
 import { deletePersistedState, loadPersistedState, savePersistedState } from "../lib/persistence";
-import type { Curve, CurveType, PendingImport, Point, PointHistorySnapshot } from "../lib/types";
+import type { Curve, CurveType, PendingImport, Point } from "../lib/types";
 import styles from "./CurvePlotter.module.css";
 
 export function CurvePlotter() {
   const initialState = useMemo(() => createInitialState(), []);
-  const [curves, setCurves] = useState<Curve[]>(initialState.curves);
+  const {
+    curves,
+    curvesRef,
+    setCurveState,
+    setCurveStateFrom,
+    setCurveStateWithPointHistory,
+    snapshotCurrentPoints,
+    recordPointSnapshot,
+    resetPointHistory,
+    undoPointEdit,
+    redoPointEdit
+  } = usePointHistory({ initialCurves: initialState.curves });
   const [selectedCurveId, setSelectedCurveId] = useState<string | null>(initialState.selectedCurveId);
   const [extent, setExtent] = useState(initialState.extent);
   const [centerX, setCenterX] = useState(initialState.centerX);
@@ -26,20 +38,9 @@ export function CurvePlotter() {
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [showPoints, setShowPoints] = useState(initialState.showPoints);
   const [invertYAxis, setInvertYAxis] = useState(initialState.invertYAxis);
-  const [undoStack, setUndoStack] = useState<PointHistorySnapshot[]>([]);
-  const [redoStack, setRedoStack] = useState<PointHistorySnapshot[]>([]);
   const [hasLoadedPersistedState, setHasLoadedPersistedState] = useState(false);
-  const [dragging, setDragging] = useState<{ curveId: string; pointId: string; startSnapshot: PointHistorySnapshot } | null>(null);
-  const [panning, setPanning] = useState<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    startCenterX: number;
-    startCenterY: number;
-  } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const plotViewportRef = useRef<HTMLDivElement | null>(null);
-  const curvesRef = useRef(curves);
 
   const selectedCurve = curves.find((curve) => curve.id === selectedCurveId) ?? null;
   const effectiveMinExtent = Math.max(0.1, minExtent);
@@ -55,9 +56,31 @@ export function CurvePlotter() {
   const xMarkers = useMemo(() => markerValues(xMin, xMax), [xMax, xMin]);
   const yMarkers = useMemo(() => markerValues(yMin, yMax), [yMax, yMin]);
 
-  useEffect(() => {
-    curvesRef.current = curves;
-  }, [curves]);
+  const {
+    panningActive,
+    handlePointerMove,
+    startPanning,
+    finishPointerInteraction,
+    startPointDrag,
+    resetPointerInteractions
+  } = usePlotPointerInteractions({
+    curvesRef,
+    svgRef,
+    plotViewportRef,
+    centerX,
+    centerY,
+    clampedExtent,
+    effectiveMinExtent,
+    effectiveMaxExtent,
+    invertYAxis,
+    setCenterX,
+    setCenterY,
+    setExtent,
+    setSelectedCurveId,
+    updatePoint,
+    snapshotCurrentPoints,
+    recordPointSnapshot
+  });
 
   useEffect(() => {
     setSelectedCurveId((current) => (current && curves.some((curve) => curve.id === current) ? current : curves[0]?.id ?? null));
@@ -83,8 +106,7 @@ export function CurvePlotter() {
           setMaxExtent(state.maxExtent);
           setShowPoints(state.showPoints);
           setInvertYAxis(state.invertYAxis);
-          setUndoStack([]);
-          setRedoStack([]);
+          resetPointHistory();
         }
       })
       .catch(() => {
@@ -97,7 +119,7 @@ export function CurvePlotter() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [resetPointHistory, setCurveState]);
 
   useEffect(() => {
     if (!hasLoadedPersistedState) return;
@@ -136,59 +158,7 @@ export function CurvePlotter() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  });
-
-  useEffect(() => {
-    const plotViewport = plotViewportRef.current;
-    if (!plotViewport) return;
-
-    function handleNativeWheel(event: WheelEvent) {
-      zoomAroundPointer(event);
-    }
-
-    plotViewport.addEventListener("wheel", handleNativeWheel, { capture: true, passive: false });
-    return () => plotViewport.removeEventListener("wheel", handleNativeWheel, { capture: true });
-  });
-
-  function setCurveState(nextCurves: Curve[]) {
-    curvesRef.current = nextCurves;
-    setCurves(nextCurves);
-  }
-
-  function setCurveStateFrom(updater: (current: Curve[]) => Curve[]) {
-    setCurveState(updater(curvesRef.current));
-  }
-
-  function setCurveStateWithPointHistory(updater: (current: Curve[]) => Curve[]) {
-    const previousCurves = curvesRef.current;
-    const previousSnapshot = snapshotPoints(previousCurves);
-    const nextCurves = updater(previousCurves);
-    const nextSnapshot = snapshotPoints(nextCurves);
-
-    if (pointSnapshotsEqual(previousSnapshot, nextSnapshot)) return;
-
-    setUndoStack((current) => [...current.slice(-(MAX_HISTORY_STEPS - 1)), previousSnapshot]);
-    setRedoStack([]);
-    setCurveState(nextCurves);
-  }
-
-  function undoPointEdit() {
-    const snapshot = undoStack.at(-1);
-    if (!snapshot) return;
-
-    setRedoStack((current) => [...current.slice(-(MAX_HISTORY_STEPS - 1)), snapshotPoints(curvesRef.current)]);
-    setUndoStack((current) => current.slice(0, -1));
-    setCurveState(applyPointSnapshot(curvesRef.current, snapshot));
-  }
-
-  function redoPointEdit() {
-    const snapshot = redoStack.at(-1);
-    if (!snapshot) return;
-
-    setUndoStack((current) => [...current.slice(-(MAX_HISTORY_STEPS - 1)), snapshotPoints(curvesRef.current)]);
-    setRedoStack((current) => current.slice(0, -1));
-    setCurveState(applyPointSnapshot(curvesRef.current, snapshot));
-  }
+  }, [redoPointEdit, undoPointEdit]);
 
   function clearState() {
     const nextState = createInitialState();
@@ -201,11 +171,9 @@ export function CurvePlotter() {
     setMaxExtent(nextState.maxExtent);
     setShowPoints(nextState.showPoints);
     setInvertYAxis(nextState.invertYAxis);
-    setUndoStack([]);
-    setRedoStack([]);
+    resetPointHistory();
     setPendingImport(null);
-    setDragging(null);
-    setPanning(null);
+    resetPointerInteractions();
     deletePersistedState().catch(() => {
       // The debounce save will restore the cleared state if delete fails.
     });
@@ -259,123 +227,6 @@ export function CurvePlotter() {
     }
 
     setCurveStateFrom(update);
-  }
-
-  function svgPointFromEvent(event: PointerEvent<SVGSVGElement>) {
-    const svg = svgRef.current;
-    if (!svg) return { x: 0, y: 0 };
-
-    const rect = svg.getBoundingClientRect();
-    return {
-      x: centerX + ((event.clientX - rect.left) / rect.width) * (clampedExtent * 2) - clampedExtent,
-      y: invertYAxis
-        ? centerY + ((event.clientY - rect.top) / rect.height) * (clampedExtent * 2) - clampedExtent
-        : centerY + clampedExtent - ((event.clientY - rect.top) / rect.height) * (clampedExtent * 2)
-    };
-  }
-
-  function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
-    if (panning) {
-      const svg = svgRef.current;
-      if (!svg) return;
-
-      const rect = svg.getBoundingClientRect();
-      const deltaX = ((event.clientX - panning.startClientX) / rect.width) * (clampedExtent * 2);
-      const deltaY = ((event.clientY - panning.startClientY) / rect.height) * (clampedExtent * 2);
-
-      setCenterX(panning.startCenterX - deltaX);
-      setCenterY(panning.startCenterY + (invertYAxis ? -deltaY : deltaY));
-      return;
-    }
-
-    if (!dragging) return;
-
-    const curve = curvesRef.current.find((item) => item.id === dragging.curveId);
-    const pointIndex = curve?.points.findIndex((point) => point.id === dragging.pointId) ?? -1;
-    if (!curve || pointIndex < 0) return;
-
-    const rawPoint = svgPointFromEvent(event);
-    const nextPoint = magnetizeGuide(curve, pointIndex, { ...curve.points[pointIndex], ...rawPoint }, clampedExtent);
-    updatePoint(curve.id, dragging.pointId, { x: nextPoint.x, y: nextPoint.y }, false);
-  }
-
-  function startPanning(event: PointerEvent<SVGSVGElement>) {
-    if (event.button !== 0 || dragging) return;
-
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setPanning({
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startCenterX: centerX,
-      startCenterY: centerY
-    });
-  }
-
-  function finishPanning(event?: PointerEvent<SVGSVGElement>) {
-    if (panning && event?.currentTarget.hasPointerCapture(panning.pointerId)) {
-      event.currentTarget.releasePointerCapture(panning.pointerId);
-    }
-    setPanning(null);
-  }
-
-  function finishDragging() {
-    if (!dragging) return;
-
-    const currentSnapshot = snapshotPoints(curvesRef.current);
-    if (!pointSnapshotsEqual(dragging.startSnapshot, currentSnapshot)) {
-      setUndoStack((current) => [...current.slice(-(MAX_HISTORY_STEPS - 1)), dragging.startSnapshot]);
-      setRedoStack([]);
-    }
-
-    setDragging(null);
-  }
-
-  function finishPointerInteraction(event: PointerEvent<SVGSVGElement>) {
-    finishDragging();
-    finishPanning(event);
-  }
-
-  function startPointDrag(curveId: string, pointId: string, event: PointerEvent<SVGCircleElement>) {
-    event.stopPropagation();
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setSelectedCurveId(curveId);
-    setDragging({ curveId, pointId, startSnapshot: snapshotPoints(curvesRef.current) });
-  }
-
-  function zoomAroundPointer(event: WheelEvent) {
-    event.preventDefault();
-
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const rect = svg.getBoundingClientRect();
-    const likelyTrackpadPan = !event.ctrlKey && event.deltaMode === 0 && (Math.abs(event.deltaX) > 0 || Math.abs(event.deltaY) < 50);
-
-    if (likelyTrackpadPan) {
-      const deltaX = (event.deltaX / rect.width) * (clampedExtent * 2);
-      const deltaY = (event.deltaY / rect.height) * (clampedExtent * 2);
-
-      setCenterX((current) => current + deltaX);
-      setCenterY((current) => current + (invertYAxis ? deltaY : -deltaY));
-      return;
-    }
-
-    const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-    const worldX = centerX + (normalizedX * 2 - 1) * clampedExtent;
-    const worldY = invertYAxis
-      ? centerY + (normalizedY * 2 - 1) * clampedExtent
-      : centerY + (1 - normalizedY * 2) * clampedExtent;
-    const zoomScale = Math.exp(event.deltaY * 0.001);
-    const nextExtent = clamp(clampedExtent * zoomScale, effectiveMinExtent, effectiveMaxExtent);
-
-    setExtent(nextExtent);
-    setCenterX(worldX - (normalizedX * 2 - 1) * nextExtent);
-    setCenterY(invertYAxis ? worldY - (normalizedY * 2 - 1) * nextExtent : worldY - (1 - normalizedY * 2) * nextExtent);
   }
 
   function addPoint(curveId: string) {
@@ -505,7 +356,7 @@ export function CurvePlotter() {
           yValues={yValues}
           xMarkers={xMarkers}
           yMarkers={yMarkers}
-          panningActive={Boolean(panning)}
+          panningActive={panningActive}
           svgRef={svgRef}
           plotViewportRef={plotViewportRef}
           onCanvasPointerDown={startPanning}
